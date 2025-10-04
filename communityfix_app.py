@@ -6,6 +6,9 @@ from pathlib import Path
 import base64
 import io
 from PIL import Image
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 # Page configuration
 st.set_page_config(
@@ -177,6 +180,69 @@ def add_comment(report_id, comment_text, author="Admin"):
             report['comments'].append(comment)
             break
 
+def create_progress_charts():
+    """Create various charts for progress tracking"""
+    if not st.session_state.reports:
+        return None, None, None, None
+    
+    # Convert reports to DataFrame for easier analysis
+    df = pd.DataFrame(st.session_state.reports)
+    df['date_reported'] = pd.to_datetime(df['date_reported'])
+    
+    # 1. Status Distribution Pie Chart
+    status_counts = df['status'].value_counts()
+    status_colors = {'Received': '#ffc107', 'In Progress': '#17a2b8', 'Resolved': '#28a745'}
+    
+    fig_pie = px.pie(
+        values=status_counts.values,
+        names=status_counts.index,
+        title="Report Status Distribution",
+        color_discrete_map=status_colors
+    )
+    fig_pie.update_traces(textposition='inside', textinfo='percent+label')
+    
+    # 2. Issue Type Bar Chart
+    issue_counts = df['issue_type'].value_counts()
+    fig_bar = px.bar(
+        x=issue_counts.index,
+        y=issue_counts.values,
+        title="Reports by Issue Type",
+        labels={'x': 'Issue Type', 'y': 'Number of Reports'},
+        color=issue_counts.values,
+        color_continuous_scale='Blues'
+    )
+    fig_bar.update_layout(showlegend=False)
+    
+    # 3. Timeline Chart
+    df_daily = df.groupby(df['date_reported'].dt.date).size().reset_index(name='count')
+    fig_timeline = px.line(
+        df_daily,
+        x='date_reported',
+        y='count',
+        title="Reports Over Time",
+        labels={'date_reported': 'Date', 'count': 'Number of Reports'}
+    )
+    fig_timeline.update_traces(line=dict(width=3))
+    
+    # 4. Resolution Time Analysis
+    resolved_reports = df[df['status'] == 'Resolved'].copy()
+    if not resolved_reports.empty:
+        # Calculate days to resolution (simplified - using current date as resolution date)
+        resolved_reports['days_to_resolution'] = (datetime.datetime.now() - resolved_reports['date_reported']).dt.days
+        avg_resolution_time = resolved_reports['days_to_resolution'].mean()
+        
+        fig_resolution = px.histogram(
+            resolved_reports,
+            x='days_to_resolution',
+            title=f"Resolution Time Distribution (Avg: {avg_resolution_time:.1f} days)",
+            labels={'days_to_resolution': 'Days to Resolution', 'count': 'Number of Reports'},
+            nbins=10
+        )
+    else:
+        fig_resolution = None
+    
+    return fig_pie, fig_bar, fig_timeline, fig_resolution
+
 def main():
     # Main header
     st.markdown("""
@@ -192,9 +258,9 @@ def main():
     st.sidebar.markdown("---")
     
     if not st.session_state.admin_logged_in:
-        page = st.sidebar.radio("Navigation", ["Report Issue", "Emergency Contacts", "Admin Login"])
+        page = st.sidebar.radio("Navigation", ["Report Issue", "Emergency Contacts", "Progress Dashboard", "Admin Login"])
     else:
-        page = st.sidebar.radio("Navigation", ["Report Issue", "Emergency Contacts", "Admin Dashboard", "Logout"])
+        page = st.sidebar.radio("Navigation", ["Report Issue", "Emergency Contacts", "Progress Dashboard", "Admin Dashboard", "Logout"])
     
     # Report Issue Page
     if page == "Report Issue":
@@ -203,6 +269,10 @@ def main():
     # Emergency Contacts Page
     elif page == "Emergency Contacts":
         show_contacts_page()
+    
+    # Progress Dashboard Page
+    elif page == "Progress Dashboard":
+        show_progress_dashboard()
     
     # Admin Login Page
     elif page == "Admin Login":
@@ -389,6 +459,185 @@ def show_contacts_page():
     with col3:
         if st.button("📝 Report Issue", use_container_width=True):
             st.info("Use the 'Report Issue' page to submit non-emergency problems")
+
+def show_progress_dashboard():
+    st.title("📊 Progress Dashboard")
+    st.markdown("Track the progress of community reports and get insights into issue resolution")
+    
+    if not st.session_state.reports:
+        st.info("No reports available yet. Submit some reports to see progress tracking!")
+        return
+    
+    # Key Metrics Section
+    st.header("📈 Key Metrics")
+    
+    total_reports = len(st.session_state.reports)
+    received = len([r for r in st.session_state.reports if r['status'] == 'Received'])
+    in_progress = len([r for r in st.session_state.reports if r['status'] == 'In Progress'])
+    resolved = len([r for r in st.session_state.reports if r['status'] == 'Resolved'])
+    
+    # Calculate additional metrics
+    resolution_rate = (resolved / total_reports * 100) if total_reports > 0 else 0
+    avg_resolution_time = 0
+    if resolved > 0:
+        resolved_reports = [r for r in st.session_state.reports if r['status'] == 'Resolved']
+        total_days = sum([(datetime.datetime.now() - datetime.datetime.strptime(r['date_reported'], "%Y-%m-%d %H:%M")).days for r in resolved_reports])
+        avg_resolution_time = total_days / resolved if resolved > 0 else 0
+    
+    col1, col2, col3, col4, col5 = st.columns(5)
+    
+    with col1:
+        st.metric("Total Reports", total_reports, delta=None)
+    with col2:
+        st.metric("Resolution Rate", f"{resolution_rate:.1f}%", delta=f"{resolved} resolved")
+    with col3:
+        st.metric("Avg Resolution Time", f"{avg_resolution_time:.1f} days", delta="from submission")
+    with col4:
+        st.metric("In Progress", in_progress, delta=f"{in_progress/total_reports*100:.1f}%" if total_reports > 0 else "0%")
+    with col5:
+        st.metric("Pending", received, delta=f"{received/total_reports*100:.1f}%" if total_reports > 0 else "0%")
+    
+    # Charts Section
+    st.header("📊 Visual Analytics")
+    
+    # Create charts
+    fig_pie, fig_bar, fig_timeline, fig_resolution = create_progress_charts()
+    
+    if fig_pie and fig_bar and fig_timeline:
+        # First row - Status and Issue Type
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.plotly_chart(fig_pie, use_container_width=True)
+        
+        with col2:
+            st.plotly_chart(fig_bar, use_container_width=True)
+        
+        # Second row - Timeline
+        st.plotly_chart(fig_timeline, use_container_width=True)
+        
+        # Third row - Resolution Time (if available)
+        if fig_resolution:
+            st.plotly_chart(fig_resolution, use_container_width=True)
+    
+    # Recent Activity Section
+    st.header("🕒 Recent Activity")
+    
+    # Get recent reports (last 10)
+    recent_reports = sorted(st.session_state.reports, key=lambda x: x['date_reported'], reverse=True)[:10]
+    
+    for report in recent_reports:
+        status_color = {
+            'Received': '🟡',
+            'In Progress': '🔵', 
+            'Resolved': '🟢'
+        }.get(report['status'], '⚪')
+        
+        with st.container():
+            col1, col2, col3 = st.columns([3, 2, 1])
+            
+            with col1:
+                st.write(f"**{status_color} Report #{report['id']}** - {report['issue_type']}")
+                st.write(f"📍 {report['location']}")
+                st.write(f"👤 {report['name']} - {report['date_reported']}")
+            
+            with col2:
+                st.write(f"**Status:** {report['status']}")
+                st.write(f"**Assigned:** {report['assigned_to']}")
+                if report.get('priority'):
+                    priority_emoji = {'Low': '🟢', 'Medium': '🟡', 'High': '🟠', 'Emergency': '🔴'}
+                    st.write(f"**Priority:** {priority_emoji.get(report['priority'], '⚪')} {report['priority']}")
+            
+            with col3:
+                if st.button(f"View Details", key=f"view_{report['id']}"):
+                    st.session_state[f"show_report_{report['id']}"] = True
+            
+            # Show report details if requested
+            if st.session_state.get(f"show_report_{report['id']}", False):
+                with st.expander(f"Report #{report['id']} Details", expanded=True):
+                    st.write(f"**Description:** {report['description']}")
+                    st.write(f"**Contact:** {report['contact']}")
+                    
+                    # Show photo if available
+                    if report.get('photo'):
+                        try:
+                            photo_data = base64.b64decode(report['photo'])
+                            st.image(photo_data, caption="Report Photo", use_column_width=True)
+                        except:
+                            st.warning("Could not display photo")
+                    
+                    # Show comments
+                    if report.get('comments'):
+                        st.write("**Comments & Updates:**")
+                        for comment in reversed(report['comments']):
+                            st.write(f"💬 **{comment['author']}** ({comment['timestamp']}): {comment['text']}")
+                    
+                    if st.button(f"Close Details", key=f"close_{report['id']}"):
+                        st.session_state[f"show_report_{report['id']}"] = False
+                        st.rerun()
+            
+            st.divider()
+    
+    # Issue Type Analysis
+    st.header("🔍 Issue Analysis")
+    
+    # Create issue type breakdown
+    issue_analysis = {}
+    for report in st.session_state.reports:
+        issue_type = report['issue_type']
+        if issue_type not in issue_analysis:
+            issue_analysis[issue_type] = {'total': 0, 'resolved': 0, 'in_progress': 0, 'received': 0}
+        
+        issue_analysis[issue_type]['total'] += 1
+        issue_analysis[issue_type][report['status'].lower().replace(' ', '_')] += 1
+    
+    # Display issue analysis
+    for issue_type, stats in issue_analysis.items():
+        resolution_rate = (stats['resolved'] / stats['total'] * 100) if stats['total'] > 0 else 0
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric(f"{issue_type}", stats['total'])
+        with col2:
+            st.metric("Resolved", stats['resolved'], f"{resolution_rate:.1f}%")
+        with col3:
+            st.metric("In Progress", stats['in_progress'])
+        with col4:
+            st.metric("Pending", stats['received'])
+        
+        # Progress bar
+        progress = resolution_rate / 100
+        st.progress(progress)
+        st.write(f"Resolution Progress: {resolution_rate:.1f}%")
+        st.divider()
+    
+    # Performance Insights
+    st.header("💡 Performance Insights")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("📊 Quick Stats")
+        st.write(f"• **Most Common Issue:** {max(issue_analysis.keys(), key=lambda x: issue_analysis[x]['total']) if issue_analysis else 'N/A'}")
+        st.write(f"• **Best Resolved Issue:** {max(issue_analysis.keys(), key=lambda x: issue_analysis[x]['resolved']/issue_analysis[x]['total'] if issue_analysis[x]['total'] > 0 else 0) if issue_analysis else 'N/A'}")
+        st.write(f"• **Total Reports This Month:** {len([r for r in st.session_state.reports if datetime.datetime.strptime(r['date_reported'], '%Y-%m-%d %H:%M').month == datetime.datetime.now().month])}")
+    
+    with col2:
+        st.subheader("🎯 Recommendations")
+        if resolution_rate < 50:
+            st.warning("⚠️ Resolution rate is below 50%. Consider increasing resources for faster resolution.")
+        elif resolution_rate < 80:
+            st.info("💡 Good progress! Aim for 80%+ resolution rate.")
+        else:
+            st.success("🎉 Excellent resolution rate! Keep up the great work!")
+        
+        if avg_resolution_time > 7:
+            st.warning("⚠️ Average resolution time is over a week. Consider streamlining processes.")
+        elif avg_resolution_time > 3:
+            st.info("💡 Resolution time is acceptable but could be improved.")
+        else:
+            st.success("🎉 Great response time! Issues are being resolved quickly.")
 
 def show_admin_login():
     st.title("🔐 Admin Login")
